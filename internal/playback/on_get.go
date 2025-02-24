@@ -143,9 +143,27 @@ func (s *Server) onGet(ctx *gin.Context) {
 		return
 	}
 
+	// Retrieve the recording configuration and segments.
+	pathConf, err := s.safeFindPathConf(pathName)
+	if err != nil {
+		s.writeError(ctx, http.StatusBadRequest, err)
+		return
+	}
+
+	end := start.Add(duration)
+	segments, err := recordstore.FindSegments(pathConf, pathName, &start, &end)
+	if err != nil {
+		if errors.Is(err, recordstore.ErrNoSegmentsFound) {
+			s.writeError(ctx, http.StatusNotFound, err)
+		} else {
+			s.writeError(ctx, http.StatusBadRequest, err)
+		}
+		return
+	}
+
 	format := ctx.Query("format")
 	if format == "hls" {
-		s.handleHLS(ctx, pathName, start, duration)
+		s.handleHLS(ctx, pathName, start, duration, pathConf, segments)
 		return
 	}
 
@@ -161,23 +179,6 @@ func (s *Server) onGet(ctx *gin.Context) {
 
 	default:
 		s.writeError(ctx, http.StatusBadRequest, fmt.Errorf("invalid format: %s", format))
-		return
-	}
-
-	pathConf, err := s.safeFindPathConf(pathName)
-	if err != nil {
-		s.writeError(ctx, http.StatusBadRequest, err)
-		return
-	}
-
-	end := start.Add(duration)
-	segments, err := recordstore.FindSegments(pathConf, pathName, &start, &end)
-	if err != nil {
-		if errors.Is(err, recordstore.ErrNoSegmentsFound) {
-			s.writeError(ctx, http.StatusNotFound, err)
-		} else {
-			s.writeError(ctx, http.StatusBadRequest, err)
-		}
 		return
 	}
 
@@ -205,13 +206,13 @@ func (s *Server) onGet(ctx *gin.Context) {
 	}
 }
 
-// handleHLS handles HLS playback requests in a refactored manner.
-func (s *Server) handleHLS(ctx *gin.Context, pathName string, start time.Time, duration time.Duration) {
-	// Use a local HLS directory in the current working directory.
+// handles HLS playback flow.
+func (s *Server) handleHLS(ctx *gin.Context, pathName string, start time.Time, duration time.Duration, pathConf *conf.Path, segments []*recordstore.Segment) {
+	// Use a local HLS directory in the current working directory to keep the processed hls playlists.
 	token := computeToken(pathName, start, duration)
 	hlsDir := filepath.Join(".", "mediamtx_hls", token)
 
-	// If "file" parameter is present, serve the HLS segment.
+	// If "file" parameter is present, serve the HLS segment directly.
 	if segFile := ctx.Query("file"); segFile != "" {
 		ctx.File(filepath.Join(hlsDir, segFile))
 		return
@@ -223,61 +224,29 @@ func (s *Server) handleHLS(ctx *gin.Context, pathName string, start time.Time, d
 		return
 	}
 
-	pathConf, err := s.safeFindPathConf(pathName)
+	// Create a trimmed MP4 file using the same logic (seekAndMux) as the non-HLS (MP4) flow. (2 min of segment out of 2 hr video)
+	trimmedFilePath := filepath.Join(hlsDir, "trimmed.mp4")
+	f, err := os.Create(trimmedFilePath)
 	if err != nil {
-		s.writeError(ctx, http.StatusBadRequest, err)
+		s.writeError(ctx, http.StatusInternalServerError, fmt.Errorf("failed to create trimmed file: %w", err))
 		return
 	}
-	end := start.Add(duration)
-	segments, err := recordstore.FindSegments(pathConf, pathName, &start, &end)
+	defer os.Remove(trimmedFilePath)
+
+	// Use muxerFMP4 (which writes to an io.Writer) to generate the trimmed clip.
+	m := &muxerFMP4{w: f}
+	err = seekAndMux(pathConf.RecordFormat, segments, start, duration, m)
+	f.Close()
 	if err != nil {
-		if errors.Is(err, recordstore.ErrNoSegmentsFound) {
-			s.writeError(ctx, http.StatusNotFound, err)
-		} else {
-			s.writeError(ctx, http.StatusBadRequest, err)
-		}
+		s.writeError(ctx, http.StatusInternalServerError, fmt.Errorf("muxing failed: %w", err))
 		return
 	}
 
-	// Create a file list for ffmpeg's concat demuxer.
-	fileListPath := filepath.Join(hlsDir, "filelist.txt")
-	fileList, err := os.Create(fileListPath)
-	if err != nil {
-		s.writeError(ctx, http.StatusInternalServerError, fmt.Errorf("failed to create file list: %w", err))
-		return
-	}
-	defer fileList.Close()
-	for _, seg := range segments {
-		absPath, err := filepath.Abs(seg.Fpath)
-		if err != nil {
-			s.writeError(ctx, http.StatusInternalServerError, fmt.Errorf("failed to get absolute path: %w", err))
-			return
-		}
-		if _, err = fileList.WriteString(fmt.Sprintf("file '%s'\n", absPath)); err != nil {
-			s.writeError(ctx, http.StatusInternalServerError, fmt.Errorf("failed to write file list: %w", err))
-			return
-		}
-	}
-
-	// Calculate the start offset based on the first segment's start time.
-	offset := 0.0
-	if len(segments) > 0 {
-		offsetDuration := start.Sub(segments[0].Start)
-		if offsetDuration < 0 {
-			offsetDuration = 0
-		}
-		offset = offsetDuration.Seconds()
-	}
-
-	// Build and run ffmpeg command to generate the HLS package.
+	// Use ffmpeg to convert the trimmed MP4 clip to HLS.
 	hlsPlaylist := filepath.Join(hlsDir, "index.m3u8")
-	cmdArgs := []string{
+	ffmpegArgs := []string{
 		"-y",
-		"-f", "concat",
-		"-safe", "0",
-		"-i", fileListPath,
-		"-ss", fmt.Sprintf("%.3f", offset),
-		"-t", fmt.Sprintf("%.3f", duration.Seconds()),
+		"-i", trimmedFilePath,
 		"-c", "copy",
 		"-f", "hls",
 		"-hls_time", "10",
@@ -285,8 +254,8 @@ func (s *Server) handleHLS(ctx *gin.Context, pathName string, start time.Time, d
 		"-hls_base_url", "",
 		hlsPlaylist,
 	}
-	if err = exec.Command("ffmpeg", cmdArgs...).Run(); err != nil {
-		s.writeError(ctx, http.StatusInternalServerError, fmt.Errorf("ffmpeg failed: %w", err))
+	if err = exec.Command("ffmpeg", ffmpegArgs...).Run(); err != nil {
+		s.writeError(ctx, http.StatusInternalServerError, fmt.Errorf("ffmpeg conversion failed: %w", err))
 		return
 	}
 
