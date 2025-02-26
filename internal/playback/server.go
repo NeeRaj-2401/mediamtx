@@ -45,6 +45,7 @@ func (s *Server) Initialize() error {
 
 	router.GET("/list", s.onList)
 	router.GET("/get", s.onGet)
+	router.DELETE("/hls", s.deleteHLSDir)
 
 	network, address := restrictnetwork.Restrict("tcp", s.Address)
 

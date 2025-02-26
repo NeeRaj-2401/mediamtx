@@ -231,7 +231,6 @@ func (s *Server) handleHLS(ctx *gin.Context, pathName string, start time.Time, d
 		s.writeError(ctx, http.StatusInternalServerError, fmt.Errorf("failed to create trimmed file: %w", err))
 		return
 	}
-	defer os.Remove(trimmedFilePath)
 
 	// Use muxerFMP4 (which writes to an io.Writer) to generate the trimmed clip.
 	m := &muxerFMP4{w: f}
@@ -288,4 +287,47 @@ func (s *Server) handleHLS(ctx *gin.Context, pathName string, start time.Time, d
 	}
 	ctx.Header("Content-Type", "application/vnd.apple.mpegurl")
 	ctx.String(http.StatusOK, strings.Join(rewrittenLines, "\n"))
+}
+
+func (s *Server) deleteHLSDir(ctx *gin.Context) {
+	pathName := ctx.Query("path")
+	startStr := ctx.Query("start")
+	durationStr := ctx.Query("duration")
+
+	if pathName == "" || startStr == "" || durationStr == "" {
+		s.writeError(ctx, http.StatusBadRequest, fmt.Errorf("missing required query parameter"))
+		return
+	}
+
+	// Parse start time.
+	start, err := time.Parse(time.RFC3339, startStr)
+	if err != nil {
+		s.writeError(ctx, http.StatusBadRequest, fmt.Errorf("invalid start: %w", err))
+		return
+	}
+
+	// Parse duration.
+	duration, err := parseDuration(durationStr)
+	if err != nil {
+		s.writeError(ctx, http.StatusBadRequest, fmt.Errorf("invalid duration: %w", err))
+		return
+	}
+
+	// Compute token and HLS directory path.
+	token := computeToken(pathName, start, duration)
+	hlsDir := filepath.Join(".", "mediamtx_hls", token)
+
+	// Check if the directory exists.
+	if _, err := os.Stat(hlsDir); os.IsNotExist(err) {
+		s.writeError(ctx, http.StatusNotFound, fmt.Errorf("HLS directory does not exist"))
+		return
+	}
+
+	// Delete the directory.
+	if err := os.RemoveAll(hlsDir); err != nil {
+		s.writeError(ctx, http.StatusInternalServerError, fmt.Errorf("failed to delete HLS directory: %w", err))
+		return
+	}
+
+	ctx.String(http.StatusOK, "HLS directory deleted")
 }
