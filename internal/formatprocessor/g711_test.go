@@ -9,7 +9,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestG611Encode(t *testing.T) {
+func TestG711Encode(t *testing.T) {
 	t.Run("alaw", func(t *testing.T) {
 		forma := &format.G711{
 			PayloadTyp:   8,
@@ -18,7 +18,7 @@ func TestG611Encode(t *testing.T) {
 			ChannelCount: 1,
 		}
 
-		p, err := New(1472, forma, true)
+		p, err := New(1472, forma, true, nil)
 		require.NoError(t, err)
 
 		unit := &unit.G711{
@@ -47,7 +47,7 @@ func TestG611Encode(t *testing.T) {
 			ChannelCount: 1,
 		}
 
-		p, err := New(1472, forma, true)
+		p, err := New(1472, forma, true, nil)
 		require.NoError(t, err)
 
 		unit := &unit.G711{

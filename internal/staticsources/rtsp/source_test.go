@@ -126,7 +126,12 @@ func TestSource(t *testing.T) {
 			require.NoError(t, err)
 			defer s.Close()
 
-			stream = gortsplib.NewServerStream(&s, &description.Session{Medias: []*description.Media{media0}})
+			stream = &gortsplib.ServerStream{
+				Server: &s,
+				Desc:   &description.Session{Medias: []*description.Media{media0}},
+			}
+			err = stream.Initialize()
+			require.NoError(t, err)
 			defer stream.Close()
 
 			var te *test.SourceTester
@@ -173,7 +178,7 @@ func TestSource(t *testing.T) {
 	}
 }
 
-func TestRTSPSourceNoPassword(t *testing.T) {
+func TestSourceNoPassword(t *testing.T) {
 	var stream *gortsplib.ServerStream
 
 	nonce, err := auth.GenerateNonce()
@@ -232,7 +237,12 @@ func TestRTSPSourceNoPassword(t *testing.T) {
 	require.NoError(t, err)
 	defer s.Close()
 
-	stream = gortsplib.NewServerStream(&s, &description.Session{Medias: []*description.Media{media0}})
+	stream = &gortsplib.ServerStream{
+		Server: &s,
+		Desc:   &description.Session{Medias: []*description.Media{media0}},
+	}
+	err = stream.Initialize()
+	require.NoError(t, err)
 	defer stream.Close()
 
 	var sp conf.RTSPTransport
@@ -257,7 +267,7 @@ func TestRTSPSourceNoPassword(t *testing.T) {
 	<-te.Unit
 }
 
-func TestRTSPSourceRange(t *testing.T) {
+func TestSourceRange(t *testing.T) {
 	for _, ca := range []string{"clock", "npt", "smpte"} {
 		t.Run(ca, func(t *testing.T) {
 			var stream *gortsplib.ServerStream
@@ -316,7 +326,12 @@ func TestRTSPSourceRange(t *testing.T) {
 			require.NoError(t, err)
 			defer s.Close()
 
-			stream = gortsplib.NewServerStream(&s, &description.Session{Medias: []*description.Media{media0}})
+			stream = &gortsplib.ServerStream{
+				Server: &s,
+				Desc:   &description.Session{Medias: []*description.Media{media0}},
+			}
+			err = stream.Initialize()
+			require.NoError(t, err)
 			defer stream.Close()
 
 			cnf := &conf.Path{}

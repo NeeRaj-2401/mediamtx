@@ -78,6 +78,7 @@ func TestConfFromFile(t *testing.T) {
 			RPICameraBitrate:           5000000,
 			RPICameraProfile:           "main",
 			RPICameraLevel:             "4.1",
+			RPICameraJPEGQuality:       60,
 			RunOnDemandStartTimeout:    5 * Duration(time.Second),
 			RunOnDemandCloseAfter:      10 * Duration(time.Second),
 		}, pa)
@@ -365,15 +366,6 @@ func TestConfErrors(t *testing.T) {
 			`all_others, all and '~^.*$' are aliases`,
 		},
 		{
-			"playback",
-			"playback: yes\n" +
-				"paths:\n" +
-				"  my_path:\n" +
-				"    recordPath: ./recordings/%path/%Y-%m-%d_%H-%M-%S",
-			`record path './recordings/%path/%Y-%m-%d_%H-%M-%S' is missing one of the` +
-				` mandatory elements for the playback server to work: %Y %m %d %H %M %S %f`,
-		},
-		{
 			"jwt claim key empty",
 			"authMethod: jwt\n" +
 				"authJWTJWKS: https://not-real.com\n" +
@@ -424,6 +416,36 @@ func TestConfErrors(t *testing.T) {
 				"  permissions:\n" +
 				"  - action: publish\n",
 			`using a password with 'any' user is not supported`,
+		},
+		{
+			"invalid record path 1",
+			"paths:\n" +
+				"  my_path:\n" +
+				"    recordPath: invalid\n",
+			`'recordPath' must contain %path`,
+		},
+		{
+			"invalid record path 2",
+			"paths:\n" +
+				"  my_path:\n" +
+				"    recordPath: '%path/invalid'\n",
+			`'recordPath' must contain either %s or %Y %m %d %H %M %S`,
+		},
+		{
+			"invalid record path 3",
+			"playback: true\n" +
+				"paths:\n" +
+				"  my_path:\n" +
+				"    recordPath: '%path/%s'\n",
+			`'recordPath' must contain %f`,
+		},
+		{
+			"invalid record delete after",
+			"paths:\n" +
+				"  my_path:\n" +
+				"    recordSegmentDuration: 30m\n" +
+				"    recordDeleteAfter: 20m\n",
+			`'recordDeleteAfter' cannot be lower than 'recordSegmentDuration'`,
 		},
 	} {
 		t.Run(ca.name, func(t *testing.T) {

@@ -8,53 +8,48 @@ import (
 	"github.com/bluenviron/gortsplib/v4/pkg/format/rtplpcm"
 	"github.com/pion/rtp"
 
+	"github.com/bluenviron/mediamtx/internal/logger"
 	"github.com/bluenviron/mediamtx/internal/unit"
 )
 
-type formatProcessorLPCM struct {
-	udpMaxPayloadSize int
-	format            *format.LPCM
-	encoder           *rtplpcm.Encoder
-	decoder           *rtplpcm.Decoder
-	randomStart       uint32
+type lpcm struct {
+	UDPMaxPayloadSize  int
+	Format             *format.LPCM
+	GenerateRTPPackets bool
+	Parent             logger.Writer
+
+	encoder     *rtplpcm.Encoder
+	decoder     *rtplpcm.Decoder
+	randomStart uint32
 }
 
-func newLPCM(
-	udpMaxPayloadSize int,
-	forma *format.LPCM,
-	generateRTPPackets bool,
-) (*formatProcessorLPCM, error) {
-	t := &formatProcessorLPCM{
-		udpMaxPayloadSize: udpMaxPayloadSize,
-		format:            forma,
-	}
-
-	if generateRTPPackets {
+func (t *lpcm) initialize() error {
+	if t.GenerateRTPPackets {
 		err := t.createEncoder()
 		if err != nil {
-			return nil, err
+			return err
 		}
 
 		t.randomStart, err = randUint32()
 		if err != nil {
-			return nil, err
+			return err
 		}
 	}
 
-	return t, nil
+	return nil
 }
 
-func (t *formatProcessorLPCM) createEncoder() error {
+func (t *lpcm) createEncoder() error {
 	t.encoder = &rtplpcm.Encoder{
-		PayloadMaxSize: t.udpMaxPayloadSize - 12,
-		PayloadType:    t.format.PayloadTyp,
-		BitDepth:       t.format.BitDepth,
-		ChannelCount:   t.format.ChannelCount,
+		PayloadMaxSize: t.UDPMaxPayloadSize - 12,
+		PayloadType:    t.Format.PayloadTyp,
+		BitDepth:       t.Format.BitDepth,
+		ChannelCount:   t.Format.ChannelCount,
 	}
 	return t.encoder.Init()
 }
 
-func (t *formatProcessorLPCM) ProcessUnit(uu unit.Unit) error { //nolint:dupl
+func (t *lpcm) ProcessUnit(uu unit.Unit) error { //nolint:dupl
 	u := uu.(*unit.LPCM)
 
 	pkts, err := t.encoder.Encode(u.Samples)
@@ -70,7 +65,7 @@ func (t *formatProcessorLPCM) ProcessUnit(uu unit.Unit) error { //nolint:dupl
 	return nil
 }
 
-func (t *formatProcessorLPCM) ProcessRTPPacket( //nolint:dupl
+func (t *lpcm) ProcessRTPPacket( //nolint:dupl
 	pkt *rtp.Packet,
 	ntp time.Time,
 	pts int64,
@@ -88,16 +83,16 @@ func (t *formatProcessorLPCM) ProcessRTPPacket( //nolint:dupl
 	pkt.Header.Padding = false
 	pkt.PaddingSize = 0
 
-	if pkt.MarshalSize() > t.udpMaxPayloadSize {
+	if pkt.MarshalSize() > t.UDPMaxPayloadSize {
 		return nil, fmt.Errorf("payload size (%d) is greater than maximum allowed (%d)",
-			pkt.MarshalSize(), t.udpMaxPayloadSize)
+			pkt.MarshalSize(), t.UDPMaxPayloadSize)
 	}
 
 	// decode from RTP
 	if hasNonRTSPReaders || t.decoder != nil {
 		if t.decoder == nil {
 			var err error
-			t.decoder, err = t.format.CreateDecoder()
+			t.decoder, err = t.Format.CreateDecoder()
 			if err != nil {
 				return nil, err
 			}

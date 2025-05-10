@@ -7,9 +7,10 @@ import (
 
 	"github.com/bluenviron/gortsplib/v4/pkg/format"
 	"github.com/bluenviron/gortsplib/v4/pkg/format/rtph264"
-	"github.com/bluenviron/mediacommon/v2/pkg/codecs/h264"
+	mch264 "github.com/bluenviron/mediacommon/v2/pkg/codecs/h264"
 	"github.com/pion/rtp"
 
+	"github.com/bluenviron/mediamtx/internal/logger"
 	"github.com/bluenviron/mediamtx/internal/unit"
 )
 
@@ -30,16 +31,16 @@ func rtpH264ExtractParams(payload []byte) ([]byte, []byte) {
 		return nil, nil
 	}
 
-	typ := h264.NALUType(payload[0] & 0x1F)
+	typ := mch264.NALUType(payload[0] & 0x1F)
 
 	switch typ {
-	case h264.NALUTypeSPS:
+	case mch264.NALUTypeSPS:
 		return payload, nil
 
-	case h264.NALUTypePPS:
+	case mch264.NALUTypePPS:
 		return nil, payload
 
-	case h264.NALUTypeSTAPA:
+	case mch264.NALUTypeSTAPA:
 		payload = payload[1:]
 		var sps []byte
 		var pps []byte
@@ -63,13 +64,13 @@ func rtpH264ExtractParams(payload []byte) ([]byte, []byte) {
 			nalu := payload[:size]
 			payload = payload[size:]
 
-			typ = h264.NALUType(nalu[0] & 0x1F)
+			typ = mch264.NALUType(nalu[0] & 0x1F)
 
 			switch typ {
-			case h264.NALUTypeSPS:
+			case mch264.NALUTypeSPS:
 				sps = nalu
 
-			case h264.NALUTypePPS:
+			case mch264.NALUTypePPS:
 				pps = nalu
 			}
 		}
@@ -81,84 +82,78 @@ func rtpH264ExtractParams(payload []byte) ([]byte, []byte) {
 	}
 }
 
-type formatProcessorH264 struct {
-	udpMaxPayloadSize int
-	format            *format.H264
-	encoder           *rtph264.Encoder
-	decoder           *rtph264.Decoder
-	randomStart       uint32
+type h264 struct {
+	UDPMaxPayloadSize  int
+	Format             *format.H264
+	GenerateRTPPackets bool
+	Parent             logger.Writer
+
+	encoder     *rtph264.Encoder
+	decoder     *rtph264.Decoder
+	randomStart uint32
 }
 
-func newH264(
-	udpMaxPayloadSize int,
-	forma *format.H264,
-	generateRTPPackets bool,
-) (*formatProcessorH264, error) {
-	t := &formatProcessorH264{
-		udpMaxPayloadSize: udpMaxPayloadSize,
-		format:            forma,
-	}
-
-	if generateRTPPackets {
+func (t *h264) initialize() error {
+	if t.GenerateRTPPackets {
 		err := t.createEncoder(nil, nil)
 		if err != nil {
-			return nil, err
+			return err
 		}
 
 		t.randomStart, err = randUint32()
 		if err != nil {
-			return nil, err
+			return err
 		}
 	}
 
-	return t, nil
+	return nil
 }
 
-func (t *formatProcessorH264) createEncoder(
+func (t *h264) createEncoder(
 	ssrc *uint32,
 	initialSequenceNumber *uint16,
 ) error {
 	t.encoder = &rtph264.Encoder{
-		PayloadMaxSize:        t.udpMaxPayloadSize - 12,
-		PayloadType:           t.format.PayloadTyp,
+		PayloadMaxSize:        t.UDPMaxPayloadSize - 12,
+		PayloadType:           t.Format.PayloadTyp,
 		SSRC:                  ssrc,
 		InitialSequenceNumber: initialSequenceNumber,
-		PacketizationMode:     t.format.PacketizationMode,
+		PacketizationMode:     t.Format.PacketizationMode,
 	}
 	return t.encoder.Init()
 }
 
-func (t *formatProcessorH264) updateTrackParametersFromRTPPacket(payload []byte) {
+func (t *h264) updateTrackParametersFromRTPPacket(payload []byte) {
 	sps, pps := rtpH264ExtractParams(payload)
 
-	if (sps != nil && !bytes.Equal(sps, t.format.SPS)) ||
-		(pps != nil && !bytes.Equal(pps, t.format.PPS)) {
+	if (sps != nil && !bytes.Equal(sps, t.Format.SPS)) ||
+		(pps != nil && !bytes.Equal(pps, t.Format.PPS)) {
 		if sps == nil {
-			sps = t.format.SPS
+			sps = t.Format.SPS
 		}
 		if pps == nil {
-			pps = t.format.PPS
+			pps = t.Format.PPS
 		}
-		t.format.SafeSetParams(sps, pps)
+		t.Format.SafeSetParams(sps, pps)
 	}
 }
 
-func (t *formatProcessorH264) updateTrackParametersFromAU(au [][]byte) {
-	sps := t.format.SPS
-	pps := t.format.PPS
+func (t *h264) updateTrackParametersFromAU(au [][]byte) {
+	sps := t.Format.SPS
+	pps := t.Format.PPS
 	update := false
 
 	for _, nalu := range au {
-		typ := h264.NALUType(nalu[0] & 0x1F)
+		typ := mch264.NALUType(nalu[0] & 0x1F)
 
 		switch typ {
-		case h264.NALUTypeSPS:
+		case mch264.NALUTypeSPS:
 			if !bytes.Equal(nalu, sps) {
 				sps = nalu
 				update = true
 			}
 
-		case h264.NALUTypePPS:
+		case mch264.NALUTypePPS:
 			if !bytes.Equal(nalu, pps) {
 				pps = nalu
 				update = true
@@ -167,30 +162,30 @@ func (t *formatProcessorH264) updateTrackParametersFromAU(au [][]byte) {
 	}
 
 	if update {
-		t.format.SafeSetParams(sps, pps)
+		t.Format.SafeSetParams(sps, pps)
 	}
 }
 
-func (t *formatProcessorH264) remuxAccessUnit(au [][]byte) [][]byte {
+func (t *h264) remuxAccessUnit(au [][]byte) [][]byte {
 	isKeyFrame := false
 	n := 0
 
 	for _, nalu := range au {
-		typ := h264.NALUType(nalu[0] & 0x1F)
+		typ := mch264.NALUType(nalu[0] & 0x1F)
 
 		switch typ {
-		case h264.NALUTypeSPS, h264.NALUTypePPS: // parameters: remove
+		case mch264.NALUTypeSPS, mch264.NALUTypePPS: // parameters: remove
 			continue
 
-		case h264.NALUTypeAccessUnitDelimiter: // AUD: remove
+		case mch264.NALUTypeAccessUnitDelimiter: // AUD: remove
 			continue
 
-		case h264.NALUTypeIDR: // key frame
+		case mch264.NALUTypeIDR: // key frame
 			if !isKeyFrame {
 				isKeyFrame = true
 
 				// prepend parameters
-				if t.format.SPS != nil && t.format.PPS != nil {
+				if t.Format.SPS != nil && t.Format.PPS != nil {
 					n += 2
 				}
 			}
@@ -205,20 +200,20 @@ func (t *formatProcessorH264) remuxAccessUnit(au [][]byte) [][]byte {
 	filteredNALUs := make([][]byte, n)
 	i := 0
 
-	if isKeyFrame && t.format.SPS != nil && t.format.PPS != nil {
-		filteredNALUs[0] = t.format.SPS
-		filteredNALUs[1] = t.format.PPS
+	if isKeyFrame && t.Format.SPS != nil && t.Format.PPS != nil {
+		filteredNALUs[0] = t.Format.SPS
+		filteredNALUs[1] = t.Format.PPS
 		i = 2
 	}
 
 	for _, nalu := range au {
-		typ := h264.NALUType(nalu[0] & 0x1F)
+		typ := mch264.NALUType(nalu[0] & 0x1F)
 
 		switch typ {
-		case h264.NALUTypeSPS, h264.NALUTypePPS:
+		case mch264.NALUTypeSPS, mch264.NALUTypePPS:
 			continue
 
-		case h264.NALUTypeAccessUnitDelimiter:
+		case mch264.NALUTypeAccessUnitDelimiter:
 			continue
 		}
 
@@ -229,7 +224,7 @@ func (t *formatProcessorH264) remuxAccessUnit(au [][]byte) [][]byte {
 	return filteredNALUs
 }
 
-func (t *formatProcessorH264) ProcessUnit(uu unit.Unit) error {
+func (t *h264) ProcessUnit(uu unit.Unit) error {
 	u := uu.(*unit.H264)
 
 	t.updateTrackParametersFromAU(u.AU)
@@ -250,7 +245,7 @@ func (t *formatProcessorH264) ProcessUnit(uu unit.Unit) error {
 	return nil
 }
 
-func (t *formatProcessorH264) ProcessRTPPacket( //nolint:dupl
+func (t *h264) ProcessRTPPacket( //nolint:dupl
 	pkt *rtp.Packet,
 	ntp time.Time,
 	pts int64,
@@ -272,7 +267,9 @@ func (t *formatProcessorH264) ProcessRTPPacket( //nolint:dupl
 		pkt.PaddingSize = 0
 
 		// RTP packets exceed maximum size: start re-encoding them
-		if pkt.MarshalSize() > t.udpMaxPayloadSize {
+		if pkt.MarshalSize() > t.UDPMaxPayloadSize {
+			t.Parent.Log(logger.Info, "RTP packets are too big, remuxing them into smaller ones")
+
 			v1 := pkt.SSRC
 			v2 := pkt.SequenceNumber
 			err := t.createEncoder(&v1, &v2)
@@ -286,7 +283,7 @@ func (t *formatProcessorH264) ProcessRTPPacket( //nolint:dupl
 	if hasNonRTSPReaders || t.decoder != nil || t.encoder != nil {
 		if t.decoder == nil {
 			var err error
-			t.decoder, err = t.format.CreateDecoder()
+			t.decoder, err = t.Format.CreateDecoder()
 			if err != nil {
 				return nil, err
 			}

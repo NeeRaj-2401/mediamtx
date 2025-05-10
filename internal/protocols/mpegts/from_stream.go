@@ -47,7 +47,7 @@ func FromStream(
 		strea.AddReader(reader, media, forma, readFunc)
 	}
 
-	for _, media := range strea.Desc().Medias {
+	for _, media := range strea.Desc.Medias {
 		for _, forma := range media.Formats {
 			clockRate := forma.ClockRate()
 
@@ -73,7 +73,8 @@ func FromStream(
 							if !randomAccess {
 								return nil
 							}
-							dtsExtractor = h265.NewDTSExtractor()
+							dtsExtractor = &h265.DTSExtractor{}
+							dtsExtractor.Initialize()
 						}
 
 						dts, err := dtsExtractor.Extract(tunit.AU, tunit.PTS)
@@ -114,7 +115,8 @@ func FromStream(
 							if !idrPresent {
 								return nil
 							}
-							dtsExtractor = h264.NewDTSExtractor()
+							dtsExtractor = &h264.DTSExtractor{}
+							dtsExtractor.Initialize()
 						}
 
 						dts, err := dtsExtractor.Extract(tunit.AU, tunit.PTS)
@@ -317,7 +319,7 @@ func FromStream(
 	}
 
 	n := 1
-	for _, medi := range strea.Desc().Medias {
+	for _, medi := range strea.Desc.Medias {
 		for _, forma := range medi.Formats {
 			if _, ok := setuppedFormats[forma]; !ok {
 				reader.Log(logger.Warn, "skipping track %d (%s)", n, forma.Codec())
@@ -326,7 +328,11 @@ func FromStream(
 		}
 	}
 
-	w = mcmpegts.NewWriter(bw, tracks)
+	w = &mcmpegts.Writer{W: bw, Tracks: tracks}
+	err := w.Initialize()
+	if err != nil {
+		panic(err)
+	}
 
 	return nil
 }

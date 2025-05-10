@@ -77,7 +77,7 @@ func (f *formatMPEGTS) initialize() bool {
 		return track
 	}
 
-	for _, media := range f.ri.rec.Stream.Desc().Medias {
+	for _, media := range f.ri.rec.Stream.Desc.Medias {
 		for _, forma := range media.Formats {
 			clockRate := forma.ClockRate()
 
@@ -103,7 +103,8 @@ func (f *formatMPEGTS) initialize() bool {
 							if !randomAccess {
 								return nil
 							}
-							dtsExtractor = h265.NewDTSExtractor()
+							dtsExtractor = &h265.DTSExtractor{}
+							dtsExtractor.Initialize()
 						}
 
 						dts, err := dtsExtractor.Extract(tunit.AU, tunit.PTS)
@@ -147,7 +148,8 @@ func (f *formatMPEGTS) initialize() bool {
 							if !randomAccess {
 								return nil
 							}
-							dtsExtractor = h264.NewDTSExtractor()
+							dtsExtractor = &h264.DTSExtractor{}
+							dtsExtractor.Initialize()
 						}
 
 						dts, err := dtsExtractor.Extract(tunit.AU, tunit.PTS)
@@ -383,7 +385,7 @@ func (f *formatMPEGTS) initialize() bool {
 	}
 
 	n := 1
-	for _, medi := range f.ri.rec.Stream.Desc().Medias {
+	for _, medi := range f.ri.rec.Stream.Desc.Medias {
 		for _, forma := range medi.Formats {
 			if _, ok := setuppedFormatsMap[forma]; !ok {
 				f.ri.Log(logger.Warn, "skipping track %d (%s)", n, forma.Codec())
@@ -394,7 +396,12 @@ func (f *formatMPEGTS) initialize() bool {
 
 	f.dw = &dynamicWriter{}
 	f.bw = bufio.NewWriterSize(f.dw, mpegtsMaxBufferSize)
-	f.mw = mpegts.NewWriter(f.bw, tracks)
+
+	f.mw = &mpegts.Writer{W: f.bw, Tracks: tracks}
+	err := f.mw.Initialize()
+	if err != nil {
+		panic(err)
+	}
 
 	f.ri.Log(logger.Info, "recording %s",
 		defs.FormatsInfo(setuppedFormats))

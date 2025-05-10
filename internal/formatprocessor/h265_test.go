@@ -2,14 +2,16 @@ package formatprocessor
 
 import (
 	"bytes"
+	"fmt"
 	"testing"
 	"time"
 
 	"github.com/bluenviron/gortsplib/v4/pkg/format"
-	"github.com/bluenviron/mediacommon/v2/pkg/codecs/h265"
+	mch265 "github.com/bluenviron/mediacommon/v2/pkg/codecs/h265"
 	"github.com/pion/rtp"
 	"github.com/stretchr/testify/require"
 
+	"github.com/bluenviron/mediamtx/internal/logger"
 	"github.com/bluenviron/mediamtx/internal/unit"
 )
 
@@ -20,45 +22,45 @@ func TestH265DynamicParams(t *testing.T) {
 				PayloadTyp: 96,
 			}
 
-			p, err := New(1472, forma, false)
+			p, err := New(1472, forma, false, nil)
 			require.NoError(t, err)
 
 			enc, err := forma.CreateEncoder()
 			require.NoError(t, err)
 
-			pkts, err := enc.Encode([][]byte{{byte(h265.NALUType_CRA_NUT) << 1, 0}})
+			pkts, err := enc.Encode([][]byte{{byte(mch265.NALUType_CRA_NUT) << 1, 0}})
 			require.NoError(t, err)
 
 			data, err := p.ProcessRTPPacket(pkts[0], time.Time{}, 0, true)
 			require.NoError(t, err)
 
 			require.Equal(t, [][]byte{
-				{byte(h265.NALUType_CRA_NUT) << 1, 0},
+				{byte(mch265.NALUType_CRA_NUT) << 1, 0},
 			}, data.(*unit.H265).AU)
 
 			if ca == "standard" {
-				pkts, err = enc.Encode([][]byte{{byte(h265.NALUType_VPS_NUT) << 1, 1, 2, 3}})
+				pkts, err = enc.Encode([][]byte{{byte(mch265.NALUType_VPS_NUT) << 1, 1, 2, 3}})
 				require.NoError(t, err)
 
 				_, err = p.ProcessRTPPacket(pkts[0], time.Time{}, 0, false)
 				require.NoError(t, err)
 
-				pkts, err = enc.Encode([][]byte{{byte(h265.NALUType_SPS_NUT) << 1, 4, 5, 6}})
+				pkts, err = enc.Encode([][]byte{{byte(mch265.NALUType_SPS_NUT) << 1, 4, 5, 6}})
 				require.NoError(t, err)
 
 				_, err = p.ProcessRTPPacket(pkts[0], time.Time{}, 0, false)
 				require.NoError(t, err)
 
-				pkts, err = enc.Encode([][]byte{{byte(h265.NALUType_PPS_NUT) << 1, 7, 8, 9}})
+				pkts, err = enc.Encode([][]byte{{byte(mch265.NALUType_PPS_NUT) << 1, 7, 8, 9}})
 				require.NoError(t, err)
 
 				_, err = p.ProcessRTPPacket(pkts[0], time.Time{}, 0, false)
 				require.NoError(t, err)
 			} else {
 				pkts, err = enc.Encode([][]byte{
-					{byte(h265.NALUType_VPS_NUT) << 1, 1, 2, 3},
-					{byte(h265.NALUType_SPS_NUT) << 1, 4, 5, 6},
-					{byte(h265.NALUType_PPS_NUT) << 1, 7, 8, 9},
+					{byte(mch265.NALUType_VPS_NUT) << 1, 1, 2, 3},
+					{byte(mch265.NALUType_SPS_NUT) << 1, 4, 5, 6},
+					{byte(mch265.NALUType_PPS_NUT) << 1, 7, 8, 9},
 				})
 				require.NoError(t, err)
 
@@ -66,21 +68,21 @@ func TestH265DynamicParams(t *testing.T) {
 				require.NoError(t, err)
 			}
 
-			require.Equal(t, []byte{byte(h265.NALUType_VPS_NUT) << 1, 1, 2, 3}, forma.VPS)
-			require.Equal(t, []byte{byte(h265.NALUType_SPS_NUT) << 1, 4, 5, 6}, forma.SPS)
-			require.Equal(t, []byte{byte(h265.NALUType_PPS_NUT) << 1, 7, 8, 9}, forma.PPS)
+			require.Equal(t, []byte{byte(mch265.NALUType_VPS_NUT) << 1, 1, 2, 3}, forma.VPS)
+			require.Equal(t, []byte{byte(mch265.NALUType_SPS_NUT) << 1, 4, 5, 6}, forma.SPS)
+			require.Equal(t, []byte{byte(mch265.NALUType_PPS_NUT) << 1, 7, 8, 9}, forma.PPS)
 
-			pkts, err = enc.Encode([][]byte{{byte(h265.NALUType_CRA_NUT) << 1, 0}})
+			pkts, err = enc.Encode([][]byte{{byte(mch265.NALUType_CRA_NUT) << 1, 0}})
 			require.NoError(t, err)
 
 			data, err = p.ProcessRTPPacket(pkts[0], time.Time{}, 0, true)
 			require.NoError(t, err)
 
 			require.Equal(t, [][]byte{
-				{byte(h265.NALUType_VPS_NUT) << 1, 1, 2, 3},
-				{byte(h265.NALUType_SPS_NUT) << 1, 4, 5, 6},
-				{byte(h265.NALUType_PPS_NUT) << 1, 7, 8, 9},
-				{byte(h265.NALUType_CRA_NUT) << 1, 0},
+				{byte(mch265.NALUType_VPS_NUT) << 1, 1, 2, 3},
+				{byte(mch265.NALUType_SPS_NUT) << 1, 4, 5, 6},
+				{byte(mch265.NALUType_PPS_NUT) << 1, 7, 8, 9},
+				{byte(mch265.NALUType_CRA_NUT) << 1, 0},
 			}, data.(*unit.H265).AU)
 		})
 	}
@@ -89,12 +91,18 @@ func TestH265DynamicParams(t *testing.T) {
 func TestH265OversizedPackets(t *testing.T) {
 	forma := &format.H265{
 		PayloadTyp: 96,
-		VPS:        []byte{byte(h265.NALUType_VPS_NUT) << 1, 10, 11, 12},
-		SPS:        []byte{byte(h265.NALUType_SPS_NUT) << 1, 13, 14, 15},
-		PPS:        []byte{byte(h265.NALUType_PPS_NUT) << 1, 16, 17, 18},
+		VPS:        []byte{byte(mch265.NALUType_VPS_NUT) << 1, 10, 11, 12},
+		SPS:        []byte{byte(mch265.NALUType_SPS_NUT) << 1, 13, 14, 15},
+		PPS:        []byte{byte(mch265.NALUType_PPS_NUT) << 1, 16, 17, 18},
 	}
 
-	p, err := New(1472, forma, false)
+	logged := false
+
+	p, err := New(1472, forma, false,
+		Logger(func(_ logger.Level, s string, i ...interface{}) {
+			require.Equal(t, "RTP packets are too big, remuxing them into smaller ones", fmt.Sprintf(s, i...))
+			logged = true
+		}))
 	require.NoError(t, err)
 
 	var out []*rtp.Packet
@@ -172,6 +180,8 @@ func TestH265OversizedPackets(t *testing.T) {
 			),
 		},
 	}, out)
+
+	require.True(t, logged)
 }
 
 func TestH265EmptyPacket(t *testing.T) {
@@ -179,14 +189,14 @@ func TestH265EmptyPacket(t *testing.T) {
 		PayloadTyp: 96,
 	}
 
-	p, err := New(1472, forma, true)
+	p, err := New(1472, forma, true, nil)
 	require.NoError(t, err)
 
 	unit := &unit.H265{
 		AU: [][]byte{
-			{byte(h265.NALUType_VPS_NUT) << 1, 10, 11, 12}, // VPS
-			{byte(h265.NALUType_SPS_NUT) << 1, 13, 14, 15}, // SPS
-			{byte(h265.NALUType_PPS_NUT) << 1, 16, 17, 18}, // PPS
+			{byte(mch265.NALUType_VPS_NUT) << 1, 10, 11, 12}, // VPS
+			{byte(mch265.NALUType_SPS_NUT) << 1, 13, 14, 15}, // SPS
+			{byte(mch265.NALUType_PPS_NUT) << 1, 16, 17, 18}, // PPS
 		},
 	}
 

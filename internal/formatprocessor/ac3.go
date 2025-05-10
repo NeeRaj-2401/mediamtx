@@ -1,7 +1,6 @@
 package formatprocessor
 
 import (
-	"crypto/rand"
 	"errors"
 	"fmt"
 	"time"
@@ -10,59 +9,45 @@ import (
 	"github.com/bluenviron/gortsplib/v4/pkg/format/rtpac3"
 	"github.com/pion/rtp"
 
+	"github.com/bluenviron/mediamtx/internal/logger"
 	"github.com/bluenviron/mediamtx/internal/unit"
 )
 
-func randUint32() (uint32, error) {
-	var b [4]byte
-	_, err := rand.Read(b[:])
-	if err != nil {
-		return 0, err
-	}
-	return uint32(b[0])<<24 | uint32(b[1])<<16 | uint32(b[2])<<8 | uint32(b[3]), nil
+type ac3 struct {
+	UDPMaxPayloadSize  int
+	Format             *format.AC3
+	GenerateRTPPackets bool
+	Parent             logger.Writer
+
+	encoder     *rtpac3.Encoder
+	decoder     *rtpac3.Decoder
+	randomStart uint32
 }
 
-type formatProcessorAC3 struct {
-	udpMaxPayloadSize int
-	format            *format.AC3
-	encoder           *rtpac3.Encoder
-	decoder           *rtpac3.Decoder
-	randomStart       uint32
-}
-
-func newAC3(
-	udpMaxPayloadSize int,
-	forma *format.AC3,
-	generateRTPPackets bool,
-) (*formatProcessorAC3, error) {
-	t := &formatProcessorAC3{
-		udpMaxPayloadSize: udpMaxPayloadSize,
-		format:            forma,
-	}
-
-	if generateRTPPackets {
+func (t *ac3) initialize() error {
+	if t.GenerateRTPPackets {
 		err := t.createEncoder()
 		if err != nil {
-			return nil, err
+			return err
 		}
 
 		t.randomStart, err = randUint32()
 		if err != nil {
-			return nil, err
+			return err
 		}
 	}
 
-	return t, nil
+	return nil
 }
 
-func (t *formatProcessorAC3) createEncoder() error {
+func (t *ac3) createEncoder() error {
 	t.encoder = &rtpac3.Encoder{
-		PayloadType: t.format.PayloadTyp,
+		PayloadType: t.Format.PayloadTyp,
 	}
 	return t.encoder.Init()
 }
 
-func (t *formatProcessorAC3) ProcessUnit(uu unit.Unit) error { //nolint:dupl
+func (t *ac3) ProcessUnit(uu unit.Unit) error { //nolint:dupl
 	u := uu.(*unit.AC3)
 
 	pkts, err := t.encoder.Encode(u.Frames)
@@ -78,7 +63,7 @@ func (t *formatProcessorAC3) ProcessUnit(uu unit.Unit) error { //nolint:dupl
 	return nil
 }
 
-func (t *formatProcessorAC3) ProcessRTPPacket( //nolint:dupl
+func (t *ac3) ProcessRTPPacket( //nolint:dupl
 	pkt *rtp.Packet,
 	ntp time.Time,
 	pts int64,
@@ -96,16 +81,16 @@ func (t *formatProcessorAC3) ProcessRTPPacket( //nolint:dupl
 	pkt.Header.Padding = false
 	pkt.PaddingSize = 0
 
-	if pkt.MarshalSize() > t.udpMaxPayloadSize {
+	if pkt.MarshalSize() > t.UDPMaxPayloadSize {
 		return nil, fmt.Errorf("payload size (%d) is greater than maximum allowed (%d)",
-			pkt.MarshalSize(), t.udpMaxPayloadSize)
+			pkt.MarshalSize(), t.UDPMaxPayloadSize)
 	}
 
 	// decode from RTP
 	if hasNonRTSPReaders || t.decoder != nil {
 		if t.decoder == nil {
 			var err error
-			t.decoder, err = t.format.CreateDecoder()
+			t.decoder, err = t.Format.CreateDecoder()
 			if err != nil {
 				return nil, err
 			}

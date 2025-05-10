@@ -9,6 +9,7 @@ import (
 	"github.com/bluenviron/gortsplib/v4/pkg/format/rtpmpeg1video"
 	"github.com/pion/rtp"
 
+	"github.com/bluenviron/mediamtx/internal/logger"
 	"github.com/bluenviron/mediamtx/internal/unit"
 )
 
@@ -21,47 +22,41 @@ var (
 	}
 )
 
-type formatProcessorMPEG1Video struct {
-	udpMaxPayloadSize int
-	format            *format.MPEG1Video
-	encoder           *rtpmpeg1video.Encoder
-	decoder           *rtpmpeg1video.Decoder
-	randomStart       uint32
+type mpeg1Video struct {
+	UDPMaxPayloadSize  int
+	Format             *format.MPEG1Video
+	GenerateRTPPackets bool
+	Parent             logger.Writer
+
+	encoder     *rtpmpeg1video.Encoder
+	decoder     *rtpmpeg1video.Decoder
+	randomStart uint32
 }
 
-func newMPEG1Video(
-	udpMaxPayloadSize int,
-	forma *format.MPEG1Video,
-	generateRTPPackets bool,
-) (*formatProcessorMPEG1Video, error) {
-	t := &formatProcessorMPEG1Video{
-		udpMaxPayloadSize: udpMaxPayloadSize,
-		format:            forma,
-	}
-
-	if generateRTPPackets {
+func (t *mpeg1Video) initialize() error {
+	if t.GenerateRTPPackets {
 		err := t.createEncoder()
 		if err != nil {
-			return nil, err
+			return err
 		}
 
 		t.randomStart, err = randUint32()
 		if err != nil {
-			return nil, err
+			return err
 		}
 	}
 
-	return t, nil
+	return nil
 }
 
-func (t *formatProcessorMPEG1Video) createEncoder() error {
+func (t *mpeg1Video) createEncoder() error {
 	t.encoder = &rtpmpeg1video.Encoder{
-		PayloadMaxSize: t.udpMaxPayloadSize - 12,
+		PayloadMaxSize: t.UDPMaxPayloadSize - 12,
 	}
 	return t.encoder.Init()
 }
 
-func (t *formatProcessorMPEG1Video) ProcessUnit(uu unit.Unit) error { //nolint:dupl
+func (t *mpeg1Video) ProcessUnit(uu unit.Unit) error { //nolint:dupl
 	u := uu.(*unit.MPEG1Video)
 
 	// encode into RTP
@@ -78,7 +73,7 @@ func (t *formatProcessorMPEG1Video) ProcessUnit(uu unit.Unit) error { //nolint:d
 	return nil
 }
 
-func (t *formatProcessorMPEG1Video) ProcessRTPPacket( //nolint:dupl
+func (t *mpeg1Video) ProcessRTPPacket( //nolint:dupl
 	pkt *rtp.Packet,
 	ntp time.Time,
 	pts int64,
@@ -96,16 +91,16 @@ func (t *formatProcessorMPEG1Video) ProcessRTPPacket( //nolint:dupl
 	pkt.Header.Padding = false
 	pkt.PaddingSize = 0
 
-	if pkt.MarshalSize() > t.udpMaxPayloadSize {
+	if pkt.MarshalSize() > t.UDPMaxPayloadSize {
 		return nil, fmt.Errorf("payload size (%d) is greater than maximum allowed (%d)",
-			pkt.MarshalSize(), t.udpMaxPayloadSize)
+			pkt.MarshalSize(), t.UDPMaxPayloadSize)
 	}
 
 	// decode from RTP
 	if hasNonRTSPReaders || t.decoder != nil {
 		if t.decoder == nil {
 			var err error
-			t.decoder, err = t.format.CreateDecoder()
+			t.decoder, err = t.Format.CreateDecoder()
 			if err != nil {
 				return nil, err
 			}

@@ -161,6 +161,7 @@ type Conf struct {
 	LogLevel            LogLevel        `json:"logLevel"`
 	LogDestinations     LogDestinations `json:"logDestinations"`
 	LogFile             string          `json:"logFile"`
+	SysLogPrefix        string          `json:"sysLogPrefix"`
 	ReadTimeout         Duration        `json:"readTimeout"`
 	WriteTimeout        Duration        `json:"writeTimeout"`
 	ReadBufferCount     *int            `json:"readBufferCount,omitempty"` // deprecated
@@ -178,6 +179,7 @@ type Conf struct {
 	AuthHTTPExclude           AuthInternalUserPermissions `json:"authHTTPExclude"`
 	AuthJWTJWKS               string                      `json:"authJWTJWKS"`
 	AuthJWTClaimKey           string                      `json:"authJWTClaimKey"`
+	AuthJWTExclude            AuthInternalUserPermissions `json:"authJWTExclude"`
 
 	// Control API
 	API               bool       `json:"api"`
@@ -311,6 +313,7 @@ func (conf *Conf) setDefaults() {
 	conf.LogLevel = LogLevel(logger.Info)
 	conf.LogDestinations = LogDestinations{logger.DestinationStdout}
 	conf.LogFile = "mediamtx.log"
+	conf.SysLogPrefix = "mediamtx"
 	conf.ReadTimeout = 10 * Duration(time.Second)
 	conf.WriteTimeout = 10 * Duration(time.Second)
 	conf.WriteQueueSize = 512
@@ -330,6 +333,7 @@ func (conf *Conf) setDefaults() {
 		},
 	}
 	conf.AuthJWTClaimKey = "mediamtx_permissions"
+	conf.AuthJWTExclude = []AuthInternalUserPermission{}
 
 	// Control API
 	conf.APIAddress = ":9997"

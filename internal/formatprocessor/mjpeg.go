@@ -9,50 +9,45 @@ import (
 	"github.com/bluenviron/gortsplib/v4/pkg/format/rtpmjpeg"
 	"github.com/pion/rtp"
 
+	"github.com/bluenviron/mediamtx/internal/logger"
 	"github.com/bluenviron/mediamtx/internal/unit"
 )
 
-type formatProcessorMJPEG struct {
-	udpMaxPayloadSize int
-	format            *format.MJPEG
-	encoder           *rtpmjpeg.Encoder
-	decoder           *rtpmjpeg.Decoder
-	randomStart       uint32
+type mjpeg struct {
+	UDPMaxPayloadSize  int
+	Format             *format.MJPEG
+	GenerateRTPPackets bool
+	Parent             logger.Writer
+
+	encoder     *rtpmjpeg.Encoder
+	decoder     *rtpmjpeg.Decoder
+	randomStart uint32
 }
 
-func newMJPEG(
-	udpMaxPayloadSize int,
-	forma *format.MJPEG,
-	generateRTPPackets bool,
-) (*formatProcessorMJPEG, error) {
-	t := &formatProcessorMJPEG{
-		udpMaxPayloadSize: udpMaxPayloadSize,
-		format:            forma,
-	}
-
-	if generateRTPPackets {
+func (t *mjpeg) initialize() error {
+	if t.GenerateRTPPackets {
 		err := t.createEncoder()
 		if err != nil {
-			return nil, err
+			return err
 		}
 
 		t.randomStart, err = randUint32()
 		if err != nil {
-			return nil, err
+			return err
 		}
 	}
 
-	return t, nil
+	return nil
 }
 
-func (t *formatProcessorMJPEG) createEncoder() error {
+func (t *mjpeg) createEncoder() error {
 	t.encoder = &rtpmjpeg.Encoder{
-		PayloadMaxSize: t.udpMaxPayloadSize - 12,
+		PayloadMaxSize: t.UDPMaxPayloadSize - 12,
 	}
 	return t.encoder.Init()
 }
 
-func (t *formatProcessorMJPEG) ProcessUnit(uu unit.Unit) error { //nolint:dupl
+func (t *mjpeg) ProcessUnit(uu unit.Unit) error { //nolint:dupl
 	u := uu.(*unit.MJPEG)
 
 	// encode into RTP
@@ -69,7 +64,7 @@ func (t *formatProcessorMJPEG) ProcessUnit(uu unit.Unit) error { //nolint:dupl
 	return nil
 }
 
-func (t *formatProcessorMJPEG) ProcessRTPPacket( //nolint:dupl
+func (t *mjpeg) ProcessRTPPacket( //nolint:dupl
 	pkt *rtp.Packet,
 	ntp time.Time,
 	pts int64,
@@ -87,16 +82,16 @@ func (t *formatProcessorMJPEG) ProcessRTPPacket( //nolint:dupl
 	pkt.Header.Padding = false
 	pkt.PaddingSize = 0
 
-	if pkt.MarshalSize() > t.udpMaxPayloadSize {
+	if pkt.MarshalSize() > t.UDPMaxPayloadSize {
 		return nil, fmt.Errorf("payload size (%d) is greater than maximum allowed (%d)",
-			pkt.MarshalSize(), t.udpMaxPayloadSize)
+			pkt.MarshalSize(), t.UDPMaxPayloadSize)
 	}
 
 	// decode from RTP
 	if hasNonRTSPReaders || t.decoder != nil {
 		if t.decoder == nil {
 			var err error
-			t.decoder, err = t.format.CreateDecoder()
+			t.decoder, err = t.Format.CreateDecoder()
 			if err != nil {
 				return nil, err
 			}

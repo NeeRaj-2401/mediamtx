@@ -8,8 +8,9 @@ import (
 )
 
 type camera struct {
-	Params params
-	OnData func(time.Duration, [][]byte)
+	params          params
+	onData          func(int64, time.Time, [][]byte)
+	onDataSecondary func(int64, time.Time, []byte)
 }
 
 func (c *camera) initialize() error {

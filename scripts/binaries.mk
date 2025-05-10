@@ -52,7 +52,7 @@ RUN tar -C tmp -czf "binaries/$(BINARY_NAME)_$$(cat internal/core/VERSION)_linux
 FROM build-base AS build-linux-arm64
 ENV GOOS=linux GOARCH=arm64
 RUN go build -o "tmp/$(BINARY_NAME)"
-RUN tar -C tmp -czf "binaries/$(BINARY_NAME)_$$(cat internal/core/VERSION)_linux_arm64v8.tar.gz" --owner=0 --group=0 "$(BINARY_NAME)" mediamtx.yml LICENSE
+RUN tar -C tmp -czf "binaries/$(BINARY_NAME)_$$(cat internal/core/VERSION)_linux_arm64.tar.gz" --owner=0 --group=0 "$(BINARY_NAME)" mediamtx.yml LICENSE
 
 FROM $(BASE_IMAGE)
 COPY --from=build-windows-amd64 /s/binaries /s/binaries
@@ -67,7 +67,7 @@ endef
 export DOCKERFILE_BINARIES
 
 binaries:
-	echo "$$DOCKERFILE_BINARIES" | DOCKER_BUILDKIT=1 docker build . -f - \
+	echo "$$DOCKERFILE_BINARIES" | docker build . -f - \
 	-t temp
 	docker run --rm -v "$(shell pwd):/out" \
 	temp sh -c "rm -rf /out/binaries && cp -r /s/binaries /out/"

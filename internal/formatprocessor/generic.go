@@ -7,32 +7,30 @@ import (
 	"github.com/bluenviron/gortsplib/v4/pkg/format"
 	"github.com/pion/rtp"
 
+	"github.com/bluenviron/mediamtx/internal/logger"
 	"github.com/bluenviron/mediamtx/internal/unit"
 )
 
-type formatProcessorGeneric struct {
-	udpMaxPayloadSize int
+type generic struct {
+	UDPMaxPayloadSize  int
+	Format             format.Format
+	GenerateRTPPackets bool
+	Parent             logger.Writer
 }
 
-func newGeneric(
-	udpMaxPayloadSize int,
-	forma format.Format,
-	generateRTPPackets bool,
-) (*formatProcessorGeneric, error) {
-	if generateRTPPackets {
-		return nil, fmt.Errorf("we don't know how to generate RTP packets of format %T", forma)
+func (t *generic) initialize() error {
+	if t.GenerateRTPPackets {
+		return fmt.Errorf("we don't know how to generate RTP packets of format %T", t.Format)
 	}
 
-	return &formatProcessorGeneric{
-		udpMaxPayloadSize: udpMaxPayloadSize,
-	}, nil
+	return nil
 }
 
-func (t *formatProcessorGeneric) ProcessUnit(_ unit.Unit) error {
+func (t *generic) ProcessUnit(_ unit.Unit) error {
 	return fmt.Errorf("using a generic unit without RTP is not supported")
 }
 
-func (t *formatProcessorGeneric) ProcessRTPPacket(
+func (t *generic) ProcessRTPPacket(
 	pkt *rtp.Packet,
 	ntp time.Time,
 	pts int64,
@@ -50,9 +48,9 @@ func (t *formatProcessorGeneric) ProcessRTPPacket(
 	pkt.Header.Padding = false
 	pkt.PaddingSize = 0
 
-	if pkt.MarshalSize() > t.udpMaxPayloadSize {
+	if pkt.MarshalSize() > t.UDPMaxPayloadSize {
 		return nil, fmt.Errorf("payload size (%d) is greater than maximum allowed (%d)",
-			pkt.MarshalSize(), t.udpMaxPayloadSize)
+			pkt.MarshalSize(), t.UDPMaxPayloadSize)
 	}
 
 	return u, nil
