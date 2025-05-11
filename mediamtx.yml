@@ -89,6 +89,7 @@ authInternalUsers:
 # {
 #   "user": "user",
 #   "password": "password",
+#   "token": "token",
 #   "ip": "ip",
 #   "action": "publish|read|playback|api|metrics|pprof",
 #   "path": "path",
@@ -111,7 +112,6 @@ authHTTPExclude:
 # This JWT must contain the claim "mediamtx_permissions" with permissions,
 # for instance:
 # {
-#  ...
 #  "mediamtx_permissions": [
 #     {
 #       "action": "publish",
@@ -119,15 +119,24 @@ authHTTPExclude:
 #     }
 #   ]
 # }
-# Users are expected to pass the JWT in the Authorization header or as a query parameter.
+# Users are expected to pass the JWT in the Authorization header, password or query parameter.
 # This is the JWKS URL that will be used to pull (once) the public key that allows
 # to validate JWTs.
 authJWTJWKS:
+# If the JWKS URL has a self-signed or invalid certificate,
+# you can provide the fingerprint of the certificate in order to
+# validate it anyway. It can be obtained by running:
+# openssl s_client -connect jwt_jwks_domain:443 </dev/null 2>/dev/null | sed -n '/BEGIN/,/END/p' > server.crt
+# openssl x509 -in server.crt -noout -fingerprint -sha256 | cut -d "=" -f2 | tr -d ':'
+authJWTJWKSFingerprint:
 # name of the claim that contains permissions.
 authJWTClaimKey: mediamtx_permissions
 # Actions to exclude from JWT-based authentication.
 # Format is the same as the one of user permissions.
 authJWTExclude: []
+# allow passing the JWT through query parameters of HTTP requests (i.e. ?jwt=JWT).
+# This is a security risk.
+authJWTInHTTPQuery: true
 
 ###############################################
 # Global settings -> Control API

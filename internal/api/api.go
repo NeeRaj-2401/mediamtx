@@ -79,6 +79,7 @@ func recordingsOfPath(
 
 type apiAuthManager interface {
 	Authenticate(req *auth.Request) error
+	RefreshJWTJWKS()
 }
 
 type apiParent interface {
@@ -120,6 +121,8 @@ func (a *API) Initialize() error {
 	router.Use(a.middlewareAuth)
 
 	group := router.Group("/v3")
+
+	group.POST("/auth/jwks/refresh", a.onAuthJwksRefresh)
 
 	group.GET("/config/global/get", a.onConfigGlobalGet)
 	group.PATCH("/config/global/patch", a.onConfigGlobalPatch)
@@ -245,10 +248,11 @@ func (a *API) middlewareOrigin(ctx *gin.Context) {
 
 func (a *API) middlewareAuth(ctx *gin.Context) {
 	req := &auth.Request{
-		IP:     net.ParseIP(ctx.ClientIP()),
-		Action: conf.AuthActionAPI,
+		Action:      conf.AuthActionAPI,
+		Query:       ctx.Request.URL.RawQuery,
+		Credentials: httpp.Credentials(ctx.Request),
+		IP:          net.ParseIP(ctx.ClientIP()),
 	}
-	req.FillFromHTTPRequest(ctx.Request)
 
 	err := a.AuthManager.Authenticate(req)
 	if err != nil {
@@ -533,6 +537,11 @@ func (a *API) onConfigPathsDelete(ctx *gin.Context) {
 	a.Conf = newConf
 	a.Parent.APIConfigSet(newConf)
 
+	ctx.Status(http.StatusOK)
+}
+
+func (a *API) onAuthJwksRefresh(ctx *gin.Context) {
+	a.AuthManager.RefreshJWTJWKS()
 	ctx.Status(http.StatusOK)
 }
 

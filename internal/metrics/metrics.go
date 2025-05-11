@@ -123,10 +123,11 @@ func (m *Metrics) middlewareOrigin(ctx *gin.Context) {
 
 func (m *Metrics) middlewareAuth(ctx *gin.Context) {
 	req := &auth.Request{
-		IP:     net.ParseIP(ctx.ClientIP()),
-		Action: conf.AuthActionMetrics,
+		Action:      conf.AuthActionMetrics,
+		Query:       ctx.Request.URL.RawQuery,
+		Credentials: httpp.Credentials(ctx.Request),
+		IP:          net.ParseIP(ctx.ClientIP()),
 	}
-	req.FillFromHTTPRequest(ctx.Request)
 
 	err := m.AuthManager.Authenticate(req)
 	if err != nil {

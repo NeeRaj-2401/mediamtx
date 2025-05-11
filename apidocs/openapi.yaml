@@ -89,8 +89,16 @@ components:
             $ref: '#/components/schemas/AuthInternalUserPermission'
         authJWTJWKS:
           type: string
+        authJWTJWKSFingerprint:
+          type: string
         authJWTClaimKey:
           type: string
+        authJWTExclude:
+          type: array
+          items:
+            $ref: '#/components/schemas/AuthInternalUserPermission'
+        authJWTInHTTPQuery:
+          type: boolean
 
         # Control API
         api:
@@ -1026,6 +1034,22 @@ components:
             $ref: '#/components/schemas/WebRTCSession'
 
 paths:
+
+  /v3/auth/jwks/refresh:
+    post:
+      operationId: authJwksRefresh
+      tags: [Authentication]
+      summary: Manually refreshes the JWT JWKS.
+      responses:
+        '200':
+          description: the request was successful.
+        '500':
+          description: server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
   /v3/config/global/get:
     get:
       operationId: configGlobalGet

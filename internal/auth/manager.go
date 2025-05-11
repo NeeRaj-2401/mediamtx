@@ -15,6 +15,7 @@ import (
 
 	"github.com/MicahParks/keyfunc/v3"
 	"github.com/bluenviron/mediamtx/internal/conf"
+	"github.com/bluenviron/mediamtx/internal/protocols/tls"
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
 )
@@ -23,8 +24,23 @@ const (
 	// PauseAfterError is the pause to apply after an authentication failure.
 	PauseAfterError = 2 * time.Second
 
-	jwtRefreshPeriod = 60 * 60 * time.Second
+	jwksRefreshPeriod = 60 * 60 * time.Second
 )
+
+func isHTTPRequest(r *Request) bool {
+	switch r.Action {
+	case conf.AuthActionPlayback, conf.AuthActionAPI,
+		conf.AuthActionMetrics, conf.AuthActionPprof:
+		return true
+	}
+
+	switch r.Protocol {
+	case ProtocolHLS, ProtocolWebRTC:
+		return true
+	}
+
+	return false
+}
 
 // Error is a authentication error.
 type Error struct {
@@ -68,19 +84,20 @@ func matchesPermission(perms []conf.AuthInternalUserPermission, req *Request) bo
 
 // Manager is the authentication manager.
 type Manager struct {
-	Method        conf.AuthMethod
-	InternalUsers []conf.AuthInternalUser
-	HTTPAddress   string
-	HTTPExclude   []conf.AuthInternalUserPermission
-	JWTJWKS       string
-	JWTClaimKey   string
-	JWTExclude    []conf.AuthInternalUserPermission
-	ReadTimeout   time.Duration
+	Method             conf.AuthMethod
+	InternalUsers      []conf.AuthInternalUser
+	HTTPAddress        string
+	HTTPExclude        []conf.AuthInternalUserPermission
+	JWTJWKS            string
+	JWTJWKSFingerprint string
+	JWTClaimKey        string
+	JWTExclude         []conf.AuthInternalUserPermission
+	JWTInHTTPQuery     bool
+	ReadTimeout        time.Duration
 
-	mutex          sync.RWMutex
-	jwtHTTPClient  *http.Client
-	jwtLastRefresh time.Time
-	jwtKeyFunc     keyfunc.Keyfunc
+	mutex           sync.RWMutex
+	jwksLastRefresh time.Time
+	jwtKeyFunc      keyfunc.Keyfunc
 }
 
 // ReloadInternalUsers reloads InternalUsers.
@@ -108,7 +125,7 @@ func (m *Manager) Authenticate(req *Request) error {
 	if err != nil {
 		return Error{
 			Wrapped:        err,
-			AskCredentials: (req.User == "" && req.Pass == ""),
+			AskCredentials: m.Method != conf.AuthMethodJWT && req.Credentials.User == "" && req.Credentials.Pass == "",
 		}
 	}
 
@@ -146,7 +163,7 @@ func (m *Manager) authenticateWithUser(
 				return false
 			}
 		} else {
-			if !u.User.Check(req.User) || !u.Pass.Check(req.Pass) {
+			if !u.User.Check(req.Credentials.User) || !u.Pass.Check(req.Credentials.Pass) {
 				return false
 			}
 		}
@@ -164,6 +181,7 @@ func (m *Manager) authenticateHTTP(req *Request) error {
 		IP       string     `json:"ip"`
 		User     string     `json:"user"`
 		Password string     `json:"password"`
+		Token    string     `json:"token"`
 		Action   string     `json:"action"`
 		Path     string     `json:"path"`
 		Protocol string     `json:"protocol"`
@@ -171,8 +189,9 @@ func (m *Manager) authenticateHTTP(req *Request) error {
 		Query    string     `json:"query"`
 	}{
 		IP:       req.IP.String(),
-		User:     req.User,
-		Password: req.Pass,
+		User:     req.Credentials.User,
+		Password: req.Credentials.Pass,
+		Token:    req.Credentials.Token,
 		Action:   string(req.Action),
 		Path:     req.Path,
 		Protocol: string(req.Protocol),
@@ -207,18 +226,35 @@ func (m *Manager) authenticateJWT(req *Request) error {
 		return err
 	}
 
-	v, err := url.ParseQuery(req.Query)
-	if err != nil {
-		return err
-	}
+	var encodedJWT string
 
-	if len(v["jwt"]) != 1 {
+	switch {
+	case req.Credentials.Token != "":
+		encodedJWT = req.Credentials.Token
+
+	case req.Credentials.Pass != "":
+		encodedJWT = req.Credentials.Pass
+
+	case (!isHTTPRequest(req) || m.JWTInHTTPQuery):
+		var v url.Values
+		v, err = url.ParseQuery(req.Query)
+		if err != nil {
+			return err
+		}
+
+		if len(v["jwt"]) != 1 || len(v["jwt"][0]) == 0 {
+			return fmt.Errorf("JWT not provided")
+		}
+
+		encodedJWT = v["jwt"][0]
+
+	default:
 		return fmt.Errorf("JWT not provided")
 	}
 
 	var cc jwtClaims
 	cc.permissionsKey = m.JWTClaimKey
-	_, err = jwt.ParseWithClaims(v["jwt"][0], &cc, keyfunc)
+	_, err = jwt.ParseWithClaims(encodedJWT, &cc, keyfunc)
 	if err != nil {
 		return err
 	}
@@ -236,15 +272,18 @@ func (m *Manager) pullJWTJWKS() (jwt.Keyfunc, error) {
 	m.mutex.Lock()
 	defer m.mutex.Unlock()
 
-	if now.Sub(m.jwtLastRefresh) >= jwtRefreshPeriod {
-		if m.jwtHTTPClient == nil {
-			m.jwtHTTPClient = &http.Client{
-				Timeout:   (m.ReadTimeout),
-				Transport: &http.Transport{},
-			}
+	if now.Sub(m.jwksLastRefresh) >= jwksRefreshPeriod {
+		tr := &http.Transport{
+			TLSClientConfig: tls.ConfigForFingerprint(m.JWTJWKSFingerprint),
+		}
+		defer tr.CloseIdleConnections()
+
+		httpClient := &http.Client{
+			Timeout:   (m.ReadTimeout),
+			Transport: tr,
 		}
 
-		res, err := m.jwtHTTPClient.Get(m.JWTJWKS)
+		res, err := httpClient.Get(m.JWTJWKS)
 		if err != nil {
 			return nil, err
 		}
@@ -262,8 +301,16 @@ func (m *Manager) pullJWTJWKS() (jwt.Keyfunc, error) {
 		}
 
 		m.jwtKeyFunc = tmp
-		m.jwtLastRefresh = now
+		m.jwksLastRefresh = now
 	}
 
 	return m.jwtKeyFunc.Keyfunc, nil
+}
+
+// RefreshJWTJWKS refreshes the JWT JWKS.
+func (m *Manager) RefreshJWTJWKS() {
+	m.mutex.Lock()
+	defer m.mutex.Unlock()
+
+	m.jwksLastRefresh = time.Time{}
 }

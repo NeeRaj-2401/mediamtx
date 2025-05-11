@@ -137,7 +137,10 @@ func (c *conn) runInner() error {
 func (c *conn) runReader() error {
 	c.nconn.SetReadDeadline(time.Now().Add(time.Duration(c.readTimeout)))
 	c.nconn.SetWriteDeadline(time.Now().Add(time.Duration(c.writeTimeout)))
-	conn, u, publish, err := rtmp.NewServerConn(c.nconn)
+	conn := &rtmp.Conn{
+		RW: c.nconn,
+	}
+	err := conn.Initialize()
 	if err != nil {
 		return err
 	}
@@ -146,25 +149,27 @@ func (c *conn) runReader() error {
 	c.rconn = conn
 	c.mutex.Unlock()
 
-	if !publish {
-		return c.runRead(conn, u)
+	if !conn.Publish {
+		return c.runRead(conn)
 	}
-	return c.runPublish(conn, u)
+	return c.runPublish(conn)
 }
 
-func (c *conn) runRead(conn *rtmp.Conn, u *url.URL) error {
-	pathName, query, rawQuery := pathNameAndQuery(u)
+func (c *conn) runRead(conn *rtmp.Conn) error {
+	pathName, query, rawQuery := pathNameAndQuery(conn.URL)
 
 	path, stream, err := c.pathManager.AddReader(defs.PathAddReaderReq{
 		Author: c,
 		AccessRequest: defs.PathAccessRequest{
 			Name:  pathName,
 			Query: rawQuery,
-			IP:    c.ip(),
-			User:  query.Get("user"),
-			Pass:  query.Get("pass"),
 			Proto: auth.ProtocolRTMP,
 			ID:    &c.uuid,
+			Credentials: &auth.Credentials{
+				User: query.Get("user"),
+				Pass: query.Get("pass"),
+			},
+			IP: c.ip(),
 		},
 	})
 	if err != nil {
@@ -218,8 +223,8 @@ func (c *conn) runRead(conn *rtmp.Conn, u *url.URL) error {
 	}
 }
 
-func (c *conn) runPublish(conn *rtmp.Conn, u *url.URL) error {
-	pathName, query, rawQuery := pathNameAndQuery(u)
+func (c *conn) runPublish(conn *rtmp.Conn) error {
+	pathName, query, rawQuery := pathNameAndQuery(conn.URL)
 
 	path, err := c.pathManager.AddPublisher(defs.PathAddPublisherReq{
 		Author: c,
@@ -227,11 +232,13 @@ func (c *conn) runPublish(conn *rtmp.Conn, u *url.URL) error {
 			Name:    pathName,
 			Query:   rawQuery,
 			Publish: true,
-			IP:      c.ip(),
-			User:    query.Get("user"),
-			Pass:    query.Get("pass"),
 			Proto:   auth.ProtocolRTMP,
 			ID:      &c.uuid,
+			Credentials: &auth.Credentials{
+				User: query.Get("user"),
+				Pass: query.Get("pass"),
+			},
+			IP: c.ip(),
 		},
 	})
 	if err != nil {
@@ -252,7 +259,10 @@ func (c *conn) runPublish(conn *rtmp.Conn, u *url.URL) error {
 	c.query = rawQuery
 	c.mutex.Unlock()
 
-	r, err := rtmp.NewReader(conn)
+	r := &rtmp.Reader{
+		Conn: conn,
+	}
+	err = r.Initialize()
 	if err != nil {
 		return err
 	}
