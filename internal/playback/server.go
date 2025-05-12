@@ -64,6 +64,9 @@ func (s *Server) Initialize() error {
 		return err
 	}
 
+	// starting cleaup service
+	go s.cleanupOldHLSDirectories()
+
 	s.Log(logger.Info, "listener opened on "+address)
 
 	return nil
