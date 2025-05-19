@@ -34,6 +34,41 @@ type Server struct {
 
 	httpServer *httpp.Server
 	mutex      sync.RWMutex
+
+	pidStore   map[string][]int
+	pidStoreMu sync.RWMutex
+}
+
+func (s *Server) addHLSPid(clientIP string, pid int) {
+	s.pidStoreMu.Lock()
+	defer s.pidStoreMu.Unlock()
+	s.pidStore[clientIP] = append(s.pidStore[clientIP], pid)
+}
+
+func (s *Server) getAndClearHLSPids(clientIP string) []int {
+	s.pidStoreMu.Lock()
+	defer s.pidStoreMu.Unlock()
+	pids := s.pidStore[clientIP]
+	delete(s.pidStore, clientIP)
+	return pids
+}
+
+func (s *Server) removeHLSPid(clientIP string, pid int) {
+	s.pidStoreMu.Lock()
+	defer s.pidStoreMu.Unlock()
+	pids, ok := s.pidStore[clientIP]
+	if !ok {
+		return
+	}
+	for i, p := range pids {
+		if p == pid {
+			s.pidStore[clientIP] = append(pids[:i], pids[i+1:]...)
+			break
+		}
+	}
+	if len(s.pidStore[clientIP]) == 0 {
+		delete(s.pidStore, clientIP)
+	}
 }
 
 // Initialize initializes Server.
@@ -45,6 +80,7 @@ func (s *Server) Initialize() error {
 
 	router.GET("/list", s.onList)
 	router.GET("/get", s.onGet)
+	router.GET("/killHLS", s.onKillHls)
 	router.DELETE("/hls", s.deleteHLSDir)
 
 	network, address := restrictnetwork.Restrict("tcp", s.Address)
@@ -59,6 +95,7 @@ func (s *Server) Initialize() error {
 		Handler:     router,
 		Parent:      s,
 	}
+	s.pidStore = make(map[string][]int)
 	err := s.httpServer.Initialize()
 	if err != nil {
 		return err

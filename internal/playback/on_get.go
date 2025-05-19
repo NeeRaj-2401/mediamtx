@@ -1,6 +1,7 @@
 package playback
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -13,6 +14,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/bluenviron/mediacommon/v2/pkg/formats/fmp4"
@@ -212,7 +214,8 @@ func (s *Server) onGet(ctx *gin.Context) {
 // handles HLS playback flow.
 func (s *Server) handleHLS(ctx *gin.Context, pathName string, start time.Time, duration time.Duration, pathConf *conf.Path, segments []*recordstore.Segment) {
 	s.Log(logger.Info, "request for hls")
-	token := computeToken(ctx.ClientIP(), pathName, start, duration)
+	clientIP := ctx.ClientIP()
+	token := computeToken(clientIP, pathName, start, duration)
 	hlsDir := filepath.Join(".", "mediamtx_hls", token)
 
 	if segFile := ctx.Query("file"); segFile != "" {
@@ -229,8 +232,11 @@ func (s *Server) handleHLS(ctx *gin.Context, pathName string, start time.Time, d
 
 	errChan := make(chan error, 1)
 
+	cmdCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+
 	go func() {
-		var err error
+		var ffmpegArgs []string
 
 		if pathConf.RecordFormat == conf.RecordFormatMPEGTS {
 			listPath := filepath.Join(hlsDir, "list.txt")
@@ -246,7 +252,7 @@ func (s *Server) handleHLS(ctx *gin.Context, pathName string, start time.Time, d
 			}
 
 			startOffset := start.Sub(segments[0].Start)
-			ffmpegArgs := []string{
+			ffmpegArgs = []string{
 				"-y",
 				"-f", "concat",
 				"-safe", "0",
@@ -259,8 +265,6 @@ func (s *Server) handleHLS(ctx *gin.Context, pathName string, start time.Time, d
 				"-hls_list_size", "0",
 				hlsPlaylist,
 			}
-
-			err = exec.Command("ffmpeg", ffmpegArgs...).Run()
 		} else {
 			trimmedFilePath := filepath.Join(hlsDir, "trimmed.mp4")
 			f, ferr := os.Create(trimmedFilePath)
@@ -276,7 +280,7 @@ func (s *Server) handleHLS(ctx *gin.Context, pathName string, start time.Time, d
 				return
 			}
 
-			ffmpegArgs := []string{
+			ffmpegArgs = []string{
 				"-y",
 				"-i", trimmedFilePath,
 				"-c", "copy",
@@ -286,9 +290,18 @@ func (s *Server) handleHLS(ctx *gin.Context, pathName string, start time.Time, d
 				"-hls_base_url", "",
 				hlsPlaylist,
 			}
-			err = exec.Command("ffmpeg", ffmpegArgs...).Run()
 		}
 
+		cmd := exec.CommandContext(cmdCtx, "ffmpeg", ffmpegArgs...)
+
+		if err := cmd.Start(); err != nil {
+			errChan <- fmt.Errorf("ffmpeg start failed: %w", err)
+			return
+		}
+
+		s.addHLSPid(clientIP, cmd.Process.Pid)
+		err := cmd.Wait()
+		defer s.removeHLSPid(clientIP, cmd.Process.Pid)
 		errChan <- err
 	}()
 
@@ -326,4 +339,28 @@ func (s *Server) handleHLS(ctx *gin.Context, pathName string, start time.Time, d
 	}
 	ctx.Header("Content-Type", "application/vnd.apple.mpegurl")
 	ctx.String(http.StatusOK, strings.Join(rewrittenLines, "\n"))
+}
+
+func (s *Server) onKillHls(ctx *gin.Context) {
+	clientIP := ctx.ClientIP()
+	pids := s.getAndClearHLSPids(clientIP)
+	if len(pids) == 0 {
+		ctx.JSON(http.StatusOK, gin.H{"message": "no HLS process to kill for this client IP"})
+		return
+	}
+
+	var errs []string
+	for _, pid := range pids {
+		if err := syscall.Kill(pid, syscall.SIGTERM); err != nil {
+			errs = append(errs, fmt.Sprintf("pid %d: %v", pid, err))
+		}
+	}
+
+	if len(errs) > 0 {
+		ctx.JSON(http.StatusInternalServerError, gin.H{"error": errs})
+		return
+	} else {
+		ctx.JSON(http.StatusOK, gin.H{"message": "all HLS processes killed 🛑"})
+		return
+	}
 }
