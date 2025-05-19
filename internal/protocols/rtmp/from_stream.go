@@ -16,7 +16,7 @@ import (
 )
 
 var errNoSupportedCodecsFrom = errors.New(
-	"the strm doesn't contain any supported codec, which are currently H264, MPEG-4 Audio, MPEG-1/2 Audio")
+	"the stream doesn't contain any supported codec, which are currently H264, MPEG-4 Audio, MPEG-1/2 Audio")
 
 func multiplyAndDivide2(v, m, d time.Duration) time.Duration {
 	secs := v / d
@@ -183,11 +183,11 @@ func setupAudio(
 	return nil
 }
 
-// FromStream maps a MediaMTX strm to a RTMP strm.
+// FromStream maps a MediaMTX stream to a RTMP stream.
 func FromStream(
 	str *stream.Stream,
 	reader stream.Reader,
-	conn *Conn,
+	conn Conn,
 	nconn net.Conn,
 	writeTimeout time.Duration,
 ) error {
