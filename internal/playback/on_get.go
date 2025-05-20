@@ -227,82 +227,77 @@ func (s *Server) handleHLS(ctx *gin.Context, pathName string, start time.Time, d
 		s.writeError(ctx, http.StatusInternalServerError, fmt.Errorf("failed to create HLS directory: %w", err))
 		return
 	}
-
 	hlsPlaylist := filepath.Join(hlsDir, "index.m3u8")
 
-	errChan := make(chan error, 1)
+	var ffmpegArgs []string
+	if pathConf.RecordFormat == conf.RecordFormatMPEGTS {
+		listPath := filepath.Join(hlsDir, "list.txt")
+		listFile, lerr := os.Create(listPath)
+		if lerr != nil {
+			s.writeError(ctx, http.StatusInternalServerError, fmt.Errorf("failed to create list file: %w", lerr))
+			return
+		}
+		defer listFile.Close()
 
+		for _, seg := range segments {
+			fmt.Fprintf(listFile, "file '%s'\n", seg.Fpath)
+		}
+
+		startOffset := start.Sub(segments[0].Start)
+		ffmpegArgs = []string{
+			"-n",
+			"-y",
+			"-f", "concat",
+			"-safe", "0",
+			"-i", listPath,
+			"-ss", fmt.Sprintf("%.2f", startOffset.Seconds()),
+			"-t", fmt.Sprintf("%.2f", duration.Seconds()),
+			"-c", "copy",
+			"-f", "hls",
+			"-hls_time", "10",
+			"-hls_list_size", "0",
+			hlsPlaylist,
+		}
+	} else {
+		trimmedFilePath := filepath.Join(hlsDir, "trimmed.mp4")
+		f, ferr := os.Create(trimmedFilePath)
+		if ferr != nil {
+			s.writeError(ctx, http.StatusInternalServerError, fmt.Errorf("failed to create trimmed file: %w", ferr))
+			return
+		}
+		m := &muxerFMP4{w: f}
+		if muxErr := seekAndMux(pathConf.RecordFormat, segments, start, duration, m); muxErr != nil {
+			f.Close()
+			s.writeError(ctx, http.StatusInternalServerError, fmt.Errorf("muxing failed: %w", muxErr))
+			return
+		}
+		f.Close()
+
+		ffmpegArgs = []string{
+			"-y",
+			"-i", trimmedFilePath,
+			"-c", "copy",
+			"-f", "hls",
+			"-hls_time", "10",
+			"-hls_list_size", "0",
+			"-hls_base_url", "",
+			hlsPlaylist,
+		}
+	}
+
+	errChan := make(chan error, 1)
 	cmdCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 
 	go func() {
-		var ffmpegArgs []string
-
-		if pathConf.RecordFormat == conf.RecordFormatMPEGTS {
-			listPath := filepath.Join(hlsDir, "list.txt")
-			listFile, lerr := os.Create(listPath)
-			if lerr != nil {
-				errChan <- fmt.Errorf("failed to create list file: %w", lerr)
-				return
-			}
-			defer listFile.Close()
-
-			for _, seg := range segments {
-				fmt.Fprintf(listFile, "file '%s'\n", seg.Fpath)
-			}
-
-			startOffset := start.Sub(segments[0].Start)
-			ffmpegArgs = []string{
-				"-y",
-				"-f", "concat",
-				"-safe", "0",
-				"-i", listPath,
-				"-ss", fmt.Sprintf("%.2f", startOffset.Seconds()),
-				"-t", fmt.Sprintf("%.2f", duration.Seconds()),
-				"-c", "copy",
-				"-f", "hls",
-				"-hls_time", "10",
-				"-hls_list_size", "0",
-				hlsPlaylist,
-			}
-		} else {
-			trimmedFilePath := filepath.Join(hlsDir, "trimmed.mp4")
-			f, ferr := os.Create(trimmedFilePath)
-			if ferr != nil {
-				errChan <- fmt.Errorf("failed to create trimmed file: %w", ferr)
-				return
-			}
-			m := &muxerFMP4{w: f}
-			muxErr := seekAndMux(pathConf.RecordFormat, segments, start, duration, m)
-			f.Close()
-			if muxErr != nil {
-				errChan <- fmt.Errorf("muxing failed: %w", muxErr)
-				return
-			}
-
-			ffmpegArgs = []string{
-				"-y",
-				"-i", trimmedFilePath,
-				"-c", "copy",
-				"-f", "hls",
-				"-hls_time", "10",
-				"-hls_list_size", "0",
-				"-hls_base_url", "",
-				hlsPlaylist,
-			}
-		}
-
 		cmd := exec.CommandContext(cmdCtx, "ffmpeg", ffmpegArgs...)
-
 		if err := cmd.Start(); err != nil {
 			errChan <- fmt.Errorf("ffmpeg start failed: %w", err)
 			return
 		}
-
 		s.addHLSPid(clientIP, cmd.Process.Pid)
-		err := cmd.Wait()
-		defer s.removeHLSPid(clientIP, cmd.Process.Pid)
-		errChan <- err
+		errChan <- cmd.Wait()
+		s.removeHLSPid(clientIP, cmd.Process.Pid)
 	}()
 
 	// Wait for the processing to complete
