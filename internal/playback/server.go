@@ -19,6 +19,11 @@ type serverAuthManager interface {
 	Authenticate(req *auth.Request) error
 }
 
+type HLSProcessInfo struct {
+	doneChan chan struct{}
+	pid      int
+}
+
 // Server is the playback server.
 type Server struct {
 	Address        string
@@ -35,40 +40,8 @@ type Server struct {
 	httpServer *httpp.Server
 	mutex      sync.RWMutex
 
-	pidStore   map[string][]int
-	pidStoreMu sync.RWMutex
-}
-
-func (s *Server) addHLSPid(clientIP string, pid int) {
-	s.pidStoreMu.Lock()
-	defer s.pidStoreMu.Unlock()
-	s.pidStore[clientIP] = append(s.pidStore[clientIP], pid)
-}
-
-func (s *Server) getAndClearHLSPids(clientIP string) []int {
-	s.pidStoreMu.Lock()
-	defer s.pidStoreMu.Unlock()
-	pids := s.pidStore[clientIP]
-	delete(s.pidStore, clientIP)
-	return pids
-}
-
-func (s *Server) removeHLSPid(clientIP string, pid int) {
-	s.pidStoreMu.Lock()
-	defer s.pidStoreMu.Unlock()
-	pids, ok := s.pidStore[clientIP]
-	if !ok {
-		return
-	}
-	for i, p := range pids {
-		if p == pid {
-			s.pidStore[clientIP] = append(pids[:i], pids[i+1:]...)
-			break
-		}
-	}
-	if len(s.pidStore[clientIP]) == 0 {
-		delete(s.pidStore, clientIP)
-	}
+	activeHLSTokens map[string]map[string]*HLSProcessInfo // clientIP -> token -> HLSProcessInfo {doneChan & pid}
+	activeHLSLock   sync.RWMutex
 }
 
 // Initialize initializes Server.
@@ -95,7 +68,7 @@ func (s *Server) Initialize() error {
 		Handler:     router,
 		Parent:      s,
 	}
-	s.pidStore = make(map[string][]int)
+	s.activeHLSTokens = make(map[string]map[string]*HLSProcessInfo)
 	err := s.httpServer.Initialize()
 	if err != nil {
 		return err
