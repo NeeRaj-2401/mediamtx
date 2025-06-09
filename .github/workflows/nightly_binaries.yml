@@ -13,8 +13,6 @@ jobs:
         fetch-depth: 0
 
     - run: make binaries
-      env:
-        CHECKSUM: '1'
 
     - uses: actions/upload-artifact@v4
       with:

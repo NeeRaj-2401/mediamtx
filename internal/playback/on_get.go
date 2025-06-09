@@ -80,9 +80,9 @@ func seekAndMux(
 
 		m.writeInit(firstInit)
 
-		segmentStartOffset := start.Sub(segments[0].Start)
+		segmentStartOffset := segments[0].Start.Sub(start) // this is negative
 
-		segmentDuration, err := segmentFMP4SeekAndMuxParts(f, segmentStartOffset, duration, firstInit, m)
+		segmentDuration, err := segmentFMP4MuxParts(f, segmentStartOffset, duration, firstInit.Tracks, m)
 		if err != nil {
 			return err
 		}
@@ -106,10 +106,10 @@ func seekAndMux(
 				break
 			}
 
-			segmentStartOffset := seg.Start.Sub(start)
+			segmentStartOffset := seg.Start.Sub(start) // this is positive
 
 			var segmentDuration time.Duration
-			segmentDuration, err = segmentFMP4MuxParts(f, segmentStartOffset, duration, firstInit, m)
+			segmentDuration, err = segmentFMP4MuxParts(f, segmentStartOffset, duration, firstInit.Tracks, m)
 			if err != nil {
 				return err
 			}
