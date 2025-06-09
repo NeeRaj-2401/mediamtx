@@ -19,6 +19,11 @@ type serverAuthManager interface {
 	Authenticate(req *auth.Request) error
 }
 
+type HLSProcessInfo struct {
+	doneChan chan struct{}
+	pid      int
+}
+
 // Server is the playback server.
 type Server struct {
 	Address        string
@@ -34,6 +39,9 @@ type Server struct {
 
 	httpServer *httpp.Server
 	mutex      sync.RWMutex
+
+	activeHLSTokens map[string]map[string]*HLSProcessInfo // clientIP -> token -> HLSProcessInfo {doneChan & pid}
+	activeHLSLock   sync.RWMutex
 }
 
 // Initialize initializes Server.
@@ -45,6 +53,7 @@ func (s *Server) Initialize() error {
 
 	router.GET("/list", s.onList)
 	router.GET("/get", s.onGet)
+	router.GET("/killHLS", s.onKillHls)
 	router.DELETE("/hls", s.deleteHLSDir)
 
 	network, address := restrictnetwork.Restrict("tcp", s.Address)
@@ -59,6 +68,7 @@ func (s *Server) Initialize() error {
 		Handler:     router,
 		Parent:      s,
 	}
+	s.activeHLSTokens = make(map[string]map[string]*HLSProcessInfo)
 	err := s.httpServer.Initialize()
 	if err != nil {
 		return err

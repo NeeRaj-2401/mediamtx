@@ -1,6 +1,7 @@
 package playback
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -134,7 +135,6 @@ func (s *Server) onGet(ctx *gin.Context) {
 	}
 
 	startStr := ctx.Request.URL.Query().Get("start")
-	s.Log(logger.Info, "start param", startStr)
 	start, err := time.Parse(time.RFC3339, startStr)
 	if err != nil {
 		s.writeError(ctx, http.StatusBadRequest, fmt.Errorf("invalid start: %w", err))
@@ -209,15 +209,55 @@ func (s *Server) onGet(ctx *gin.Context) {
 	}
 }
 
+var ffmpegSem = make(chan struct{}, 16) // based on CPU cores
+
 // handles HLS playback flow.
 func (s *Server) handleHLS(ctx *gin.Context, pathName string, start time.Time, duration time.Duration, pathConf *conf.Path, segments []*recordstore.Segment) {
-	s.Log(logger.Info, "request for hls")
-	token := computeToken(ctx.ClientIP(), pathName, start, duration)
+	clientIP := ctx.ClientIP()
+	token := computeToken(clientIP, pathName, start, duration)
 	hlsDir := filepath.Join(".", "mediamtx_hls", token)
+	hlsPlaylist := filepath.Join(hlsDir, "index.m3u8")
 
 	if segFile := ctx.Query("file"); segFile != "" {
 		ctx.File(filepath.Join(hlsDir, segFile))
 		return
+	}
+
+	s.Log(logger.Info, fmt.Sprintf("HLS request - path: %s, start: %s, duration: %s", pathName, start.Format(time.RFC3339), duration))
+	// Check for existing process and wait if present
+	s.activeHLSLock.Lock()
+	clientMap, exists := s.activeHLSTokens[clientIP]
+	if !exists {
+		clientMap = make(map[string]*HLSProcessInfo)
+		s.activeHLSTokens[clientIP] = clientMap
+	}
+	processInfo, exists := clientMap[token]
+	if exists {
+		s.activeHLSLock.Unlock()
+		select {
+		case <-processInfo.doneChan:
+			// // Existing process completed, check for segment file or serve playlist
+			// if segFile := ctx.Query("file"); segFile != "" {
+			// 	ctx.File(filepath.Join(hlsDir, segFile))
+			// 	return
+			// }
+			playlistBytes, err := os.ReadFile(hlsPlaylist)
+			if err != nil {
+				s.writeError(ctx, http.StatusInternalServerError, fmt.Errorf("failed to read playlist: %w", err))
+				return
+			}
+			servePlaylist(ctx, playlistBytes)
+			return
+		case <-ctx.Request.Context().Done():
+			return
+		}
+	} else {
+		// No existing process, create new entry
+		processInfo = &HLSProcessInfo{
+			doneChan: make(chan struct{}),
+		}
+		clientMap[token] = processInfo
+		s.activeHLSLock.Unlock()
 	}
 
 	if err := os.MkdirAll(hlsDir, 0755); err != nil {
@@ -225,74 +265,103 @@ func (s *Server) handleHLS(ctx *gin.Context, pathName string, start time.Time, d
 		return
 	}
 
-	hlsPlaylist := filepath.Join(hlsDir, "index.m3u8")
+	var ffmpegArgs []string
+	if pathConf.RecordFormat == conf.RecordFormatMPEGTS {
+		listPath := filepath.Join(hlsDir, "list.txt")
+		listFile, lerr := os.Create(listPath)
+		if lerr != nil {
+			s.writeError(ctx, http.StatusInternalServerError, fmt.Errorf("failed to create list file: %w", lerr))
+			return
+		}
+		defer listFile.Close()
 
-	errChan := make(chan error, 1)
-
-	go func() {
-		var err error
-
-		if pathConf.RecordFormat == conf.RecordFormatMPEGTS {
-			listPath := filepath.Join(hlsDir, "list.txt")
-			listFile, lerr := os.Create(listPath)
-			if lerr != nil {
-				errChan <- fmt.Errorf("failed to create list file: %w", lerr)
-				return
-			}
-			defer listFile.Close()
-
-			for _, seg := range segments {
-				fmt.Fprintf(listFile, "file '%s'\n", seg.Fpath)
-			}
-
-			startOffset := start.Sub(segments[0].Start)
-			ffmpegArgs := []string{
-				"-y",
-				"-f", "concat",
-				"-safe", "0",
-				"-i", listPath,
-				"-ss", fmt.Sprintf("%.2f", startOffset.Seconds()),
-				"-t", fmt.Sprintf("%.2f", duration.Seconds()),
-				"-c", "copy",
-				"-f", "hls",
-				"-hls_time", "10",
-				"-hls_list_size", "0",
-				hlsPlaylist,
-			}
-
-			err = exec.Command("ffmpeg", ffmpegArgs...).Run()
-		} else {
-			trimmedFilePath := filepath.Join(hlsDir, "trimmed.mp4")
-			f, ferr := os.Create(trimmedFilePath)
-			if ferr != nil {
-				errChan <- fmt.Errorf("failed to create trimmed file: %w", ferr)
-				return
-			}
-			m := &muxerFMP4{w: f}
-			muxErr := seekAndMux(pathConf.RecordFormat, segments, start, duration, m)
-			f.Close()
-			if muxErr != nil {
-				errChan <- fmt.Errorf("muxing failed: %w", muxErr)
-				return
-			}
-
-			ffmpegArgs := []string{
-				"-y",
-				"-i", trimmedFilePath,
-				"-c", "copy",
-				"-f", "hls",
-				"-hls_time", "10",
-				"-hls_list_size", "0",
-				"-hls_base_url", "",
-				hlsPlaylist,
-			}
-			err = exec.Command("ffmpeg", ffmpegArgs...).Run()
+		for _, seg := range segments {
+			fmt.Fprintf(listFile, "file '%s'\n", seg.Fpath)
 		}
 
+		startOffset := start.Sub(segments[0].Start)
+		ffmpegArgs = []string{
+			"-y",
+			"-hwaccel", "auto",
+			"-threads", "4",
+			"-f", "concat",
+			"-safe", "0",
+			"-i", listPath,
+			"-ss", fmt.Sprintf("%.2f", startOffset.Seconds()),
+			"-t", fmt.Sprintf("%.2f", duration.Seconds()),
+			"-c", "copy",
+			"-f", "hls",
+			"-hls_time", "10",
+			"-hls_list_size", "0",
+			hlsPlaylist,
+		}
+	} else {
+		trimmedFilePath := filepath.Join(hlsDir, "trimmed.mp4")
+		f, ferr := os.Create(trimmedFilePath)
+		if ferr != nil {
+			s.writeError(ctx, http.StatusInternalServerError, fmt.Errorf("failed to create trimmed file: %w", ferr))
+			return
+		}
+		m := &muxerFMP4{w: f}
+		if muxErr := seekAndMux(pathConf.RecordFormat, segments, start, duration, m); muxErr != nil {
+			f.Close()
+			s.writeError(ctx, http.StatusInternalServerError, fmt.Errorf("muxing failed: %w", muxErr))
+			return
+		}
+		f.Close()
+
+		ffmpegArgs = []string{
+			"-y",
+			"-i", trimmedFilePath,
+			"-c", "copy",
+			"-f", "hls",
+			"-hls_time", "10",
+			"-hls_list_size", "0",
+			"-hls_base_url", "",
+			hlsPlaylist,
+		}
+	}
+
+	errChan := make(chan error, 1)
+	cmdCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+
+	go func() {
+		// TODO: remove after test
+		ffmpegSem <- struct{}{}        // Acquire a slot
+		defer func() { <-ffmpegSem }() // Release the slot
+
+		startTime := time.Now()
+		cmd := exec.CommandContext(cmdCtx, "ffmpeg", ffmpegArgs...)
+		if err := cmd.Start(); err != nil {
+			errChan <- fmt.Errorf("ffmpeg start failed: %w", err)
+			return
+		}
+
+		// Track PID
+		s.activeHLSLock.Lock()
+		processInfo.pid = cmd.Process.Pid
+		s.activeHLSLock.Unlock()
+
+		err := cmd.Wait()
+
+		// logger
+		executionTime := time.Since(startTime)
+		s.Log(logger.Info, fmt.Sprintf("ffmpeg completed for token %s, took %s", token, executionTime))
+
+		// Cleanup
+		s.activeHLSLock.Lock()
+		if cm, exists := s.activeHLSTokens[clientIP]; exists {
+			delete(cm, token)
+			if len(cm) == 0 {
+				delete(s.activeHLSTokens, clientIP)
+			}
+		}
+		s.activeHLSLock.Unlock()
+		close(processInfo.doneChan)
 		errChan <- err
 	}()
 
-	// Wait for the processing to complete
 	if err := <-errChan; err != nil {
 		s.writeError(ctx, http.StatusInternalServerError, fmt.Errorf("ffmpeg processing failed: %w", err))
 		return
@@ -303,9 +372,14 @@ func (s *Server) handleHLS(ctx *gin.Context, pathName string, start time.Time, d
 		s.writeError(ctx, http.StatusInternalServerError, fmt.Errorf("failed to read playlist: %w", err))
 		return
 	}
+	servePlaylist(ctx, playlistBytes)
+}
+
+// servePlaylist rewrites the playlist URLs and sends the response.
+func servePlaylist(ctx *gin.Context, playlistBytes []byte) {
 	playlistContent := string(playlistBytes)
 	if !strings.HasPrefix(playlistContent, "#EXTM3U") {
-		s.writeError(ctx, http.StatusInternalServerError, fmt.Errorf("invalid playlist generated"))
+		ctx.String(http.StatusInternalServerError, "invalid playlist generated")
 		return
 	}
 
@@ -326,4 +400,7 @@ func (s *Server) handleHLS(ctx *gin.Context, pathName string, start time.Time, d
 	}
 	ctx.Header("Content-Type", "application/vnd.apple.mpegurl")
 	ctx.String(http.StatusOK, strings.Join(rewrittenLines, "\n"))
+}
+
+func (s *Server) onKillHls(ctx *gin.Context) {
 }
